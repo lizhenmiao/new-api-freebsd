@@ -1,0 +1,67 @@
+name: Build Latest Version
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Build Latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get current tag
+        id: get-tag
+        run: |
+          TAG=$(git describe --tags --exact-match $GITHUB_REF)
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Check existing release
+        id: check-release
+        run: |
+          EXISTS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ steps.get-tag.outputs.tag }})
+          echo "exists=$EXISTS" >> $GITHUB_OUTPUT
+
+      - name: Build if needed
+        if: steps.check-release.outputs.exists != '200'
+        env:
+          CI: ""
+        steps:
+          - name: Build Frontend
+            run: |
+              cd web
+              git describe --tags > VERSION
+              REACT_APP_VERSION=$(git describe --tags) ./build.sh
+              mv build ../build/web
+              cd ..
+
+          - name: Build Backend
+            uses: vmactions/freebsd-vm@v1
+            with:
+              usesh: true
+              release: 13.2
+              prepare: |
+                pkg install -y wget curl git gcc bash gawk gsed
+                wget https://dl.google.com/go/go1.22.0.freebsd-amd64.tar.gz
+                tar -C /usr/local -xzf go1.22.0.freebsd-amd64.tar.gz
+                ln -s /usr/local/go/bin/go /usr/local/bin/go
+              env:
+                TAG: ${{ steps.get-tag.outputs.tag }}
+              run: |
+                go mod download
+                go build -ldflags "-s -w -X 'github.com/Calcium-Ion/new-api/common.Version=$TAG' -extldflags '-static'" -o one-api
+
+          - name: Create Release
+            uses: softprops/action-gh-release@v1
+            env:
+              GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            with:
+              tag_name: ${{ steps.get-tag.outputs.tag }}
+              files: |
+                one-api
+                build/web/*
