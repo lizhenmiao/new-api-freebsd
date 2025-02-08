@@ -1,7 +1,7 @@
 name: Build All Versions
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # 仅手动触发
 
 jobs:
   prepare:
@@ -14,7 +14,9 @@ jobs:
           fetch-depth: 0
 
       - name: Fetch all tags
-        run: git fetch --tags -f
+        run: |
+          git remote add upstream https://github.com/Calcium-Ion/new-api.git
+          git fetch upstream --tags -f
 
       - name: Get unreleased tags
         id: get-tags

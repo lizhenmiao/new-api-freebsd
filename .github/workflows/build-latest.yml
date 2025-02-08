@@ -3,7 +3,7 @@ name: Auto Build Latest
 on:
   schedule:
     - cron: '0 19 * * *'  # UTC时间19点（北京时间凌晨3点）
-  workflow_dispatch:      # 保留手动触发
+  workflow_dispatch:
 
 jobs:
   check-and-build:
@@ -16,7 +16,7 @@ jobs:
 
       - name: Fetch upstream tags
         run: |
-          git remote add upstream https://github.com/songquanpeng/one-api.git
+          git remote add upstream https://github.com/Calcium-Ion/new-api.git
           git fetch upstream --tags -f
 
       - name: Get latest tag
@@ -33,7 +33,7 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ steps.get-latest.outputs.tag }}")
           echo "exists=$EXISTS" >> $GITHUB_OUTPUT
 
-      - name: Build Backend Only
+      - name: Build Backend
         if: steps.check-release.outputs.exists != '200'
         uses: ./.github/workflows/build-single.yml
         with:
