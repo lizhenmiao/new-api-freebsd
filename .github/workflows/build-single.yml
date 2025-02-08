@@ -1,0 +1,38 @@
+name: Build Single Version
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout specific tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: FreeBSD Backend Build
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          release: 13.2
+          prepare: |
+            pkg install -y go gmake
+            wget -q https://dl.google.com/go/go1.22.0.freebsd-amd64.tar.gz
+            tar -C /usr/local -xzf go1.22.0.freebsd-amd64.tar.gz
+          run: |
+            export PATH=$PATH:/usr/local/go/bin
+            cd /home/runner/work/one-api-freebsd/one-api-freebsd
+            go mod download
+            go build -ldflags "-s -w -X 'github.com/songquanpeng/one-api/common.Version=${{ inputs.tag }}'" -o new-api
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: new-api  # 仅包含二进制文件
