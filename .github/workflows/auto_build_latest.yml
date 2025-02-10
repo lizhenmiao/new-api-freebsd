@@ -24,14 +24,39 @@ jobs:
         run: |
           echo "Need to build the tag: ${{ env.LATEST_TAG }}"
 
-      - name: Trigger Build for Latest Tag
+          - name: Checkout Code
+          if: env.LATEST_TAG != env.CURRENT_TAG
+          uses: actions/checkout@v4
+
+      - name: Build Project
         if: env.LATEST_TAG != env.CURRENT_TAG
-        run: |
-          echo 'Triggered'
-          # 添加一个步骤来调用 build_tag
-  call-build-tag:
-    needs: check-latest
-    if: needs.check-latest.outputs.LATEST_TAG != needs.check-latest.outputs.CURRENT_TAG
-    uses: ./.github/workflows/build_tag.yml@main
-    with:
-      tag_name: ${{ needs.check-latest.outputs.LATEST_TAG }}
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          release: 13.2
+          prepare: |
+            pkg install -y wget curl git gcc bash gawk gsed
+            wget https://dl.google.com/go/go1.22.0.freebsd-amd64.tar.gz && tar -C /usr/local -xzf go1.22.0.freebsd-amd64.tar.gz && rm go1.22.0.freebsd-amd64.tar.gz
+            ln -s /usr/local/go/bin/go /usr/local/bin/go
+          run: |
+            cd new-api
+            go mod download
+            go build -ldflags "-s -w -X 'github.com/Calcium-Ion/new-api/common.Version=${{ env.LATEST_TAG }}' -extldflags '-static'" -o new-api
+
+      - name: Upload artifact
+        if: env.LATEST_TAG != env.CURRENT_TAG
+        uses: actions/upload-artifact@main
+        with:
+          name: new-api
+          path: |
+            new-api
+
+      - name: Create Release
+        if: env.LATEST_TAG != env.CURRENT_TAG
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ env.LATEST_TAG }}
+          files: |
+            new-api
