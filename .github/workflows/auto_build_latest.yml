@@ -66,8 +66,30 @@ jobs:
             rm go1.23.4.freebsd-amd64.tar.gz
             ln -s /usr/local/go/bin/go /usr/local/bin/go
           run: |
-            git config --global --add safe.directory /home/runner/work/new-api-freebsd/new-api-freebsd/new-api
-            cd new-api
+            # ========== 动态路径核心代码 ==========
+            # 获取 GitHub 工作区绝对路径（自动适应任意仓库名）
+            WORKSPACE_PATH="$GITHUB_WORKSPAGE"
+
+            # 定义代码相对路径（根据你的实际结构）
+            CODE_RELATIVE_PATH="new-api"  # 你的代码库克隆到 new-api 目录
+
+            # 拼接完整路径
+            CODE_FULL_PATH="$WORKSPACE_PATH/$CODE_RELATIVE_PATH"
+
+            # 打印出来完整路径, 方便调试
+            echo "完整路径：$CODE_FULL_PATH"
+
+            # 设置 Git 安全目录（动态路径）
+            git config --global --add safe.directory "$CODE_FULL_PATH"
+
+            # ========== 构建步骤 ==========
+            # 进入代码目录（强制检查路径存在）
+            if [ ! -d "$CODE_FULL_PATH" ]; then
+                echo "❌ 错误：代码目录不存在 $CODE_FULL_PATH"
+                exit 1
+            fi
+
+            cd "$CODE_FULL_PATH"
             go mod download
             go build -ldflags "-s -w -X 'one-api/common.Version=${{ needs.check-latest.outputs.LATEST_TAG }}' -extldflags '-static'" -o new-api
 
