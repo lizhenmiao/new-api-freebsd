@@ -8,55 +8,68 @@ on:
 jobs:
   check-latest:
     runs-on: ubuntu-latest
+    outputs:
+      latest_tag: ${{ steps.latest_tag.outputs.LATEST_TAG }}
+      current_tag: ${{ steps.current_tag.outputs.CURRENT_TAG }}
     steps:
       - name: Get Latest Tag from New API
         id: latest_tag
         run: |
           echo "LATEST_TAG=$(wget -qO- https://api.github.com/repos/Calcium-Ion/new-api/tags | gawk -F '\"' '/name/{print $4;exit}')" >> $GITHUB_ENV
+          echo "::set-output name=LATEST_TAG::$LATEST_TAG"
 
       - name: Get Latest Tag Built in Current Repo
         id: current_tag
         run: |
           echo "CURRENT_TAG=$(wget -qO- https://api.github.com/repos/${{ github.repository }}/releases/latest | gawk -F '\"' '/tag_name/{print $4;exit}')" >> $GITHUB_ENV
+          echo "::set-output name=CURRENT_TAG::$CURRENT_TAG"
 
       - name: Compare Tags
         if: env.LATEST_TAG != env.CURRENT_TAG
         run: |
           echo "Need to build the tag: ${{ env.LATEST_TAG }}"
 
-      - name: Checkout Code
-        if: env.LATEST_TAG != env.CURRENT_TAG
-        uses: actions/checkout@v4
+  build:
+    runs-on: ubuntu-latest
+    needs: check-latest
+    if: needs.check-latest.outputs.latest_tag != needs.check-latest.outputs.current_tag
+    steps:
+    - uses: actions/checkout@v4
 
-      - name: Build Project
-        if: env.LATEST_TAG != env.CURRENT_TAG
-        uses: vmactions/freebsd-vm@v1
-        with:
-          usesh: true
-          release: 13.2
-          prepare: |
-            pkg install -y wget curl git gcc bash gawk gsed
-            wget https://dl.google.com/go/go1.22.0.freebsd-amd64.tar.gz && tar -C /usr/local -xzf go1.22.0.freebsd-amd64.tar.gz && rm go1.22.0.freebsd-amd64.tar.gz
-            ln -s /usr/local/go/bin/go /usr/local/bin/go
-          run: |
-            cd new-api
-            go mod download
-            go build -ldflags "-s -w -X 'github.com/Calcium-Ion/new-api/common.Version=${{ env.LATEST_TAG }}' -extldflags '-static'" -o new-api
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 16
 
-      - name: Upload artifact
-        if: env.LATEST_TAG != env.CURRENT_TAG
-        uses: actions/upload-artifact@main
-        with:
-          name: new-api
-          path: |
-            new-api
+    - name: Clone Repo
+      run: |
+        git clone -b ${{ needs.check-latest.outputs.latest_tag }} https://github.com/Calcium-Ion/new-api
 
-      - name: Create Release
-        if: env.LATEST_TAG != env.CURRENT_TAG
-        uses: softprops/action-gh-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ env.LATEST_TAG }}
-          files: |
-            new-api
+    - name: Build Project on FreeBSD
+      uses: vmactions/freebsd-vm@v1
+      with:
+        usesh: true
+        release: 13.2
+        prepare: |
+          pkg install -y wget curl git gcc bash gawk gsed
+          wget https://dl.google.com/go/go1.22.0.freebsd-amd64.tar.gz && tar -C /usr/local -xzf go1.22.0.freebsd-amd64.tar.gz && rm go1.22.0.freebsd-amd64.tar.gz
+          ln -s /usr/local/go/bin/go /usr/local/bin/go
+        run: |
+          cd new-api
+          go mod download
+          go build -ldflags "-s -w -X 'github.com/Calcium-Ion/new-api/common.Version=${{ needs.check-latest.outputs.latest_tag }}' -extldflags '-static'" -o new-api
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: new-api
+        path: |
+          new-api
+
+    - name: Create release
+      uses: softprops/action-gh-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ needs.check-latest.outputs.latest_tag }}
+        files: new-api
