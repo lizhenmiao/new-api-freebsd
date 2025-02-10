@@ -26,6 +26,12 @@ jobs:
 
       - name: Trigger Build for Latest Tag
         if: env.LATEST_TAG != env.CURRENT_TAG
-        uses: ./.github/workflows/build_tag.yml # 调用方式改为 uses
-        with:
-          tag_name: ${{ env.LATEST_TAG }} # 传递输入参数
+        run: |
+          echo 'Triggered'
+          # 添加一个步骤来调用 build_tag
+  call-build-tag:
+    needs: check-latest
+    if: needs.check-latest.outputs.LATEST_TAG != needs.check-latest.outputs.CURRENT_TAG
+    uses: ./.github/workflows/build_tag.yml
+    with:
+      tag_name: ${{ needs.check-latest.outputs.LATEST_TAG }}
