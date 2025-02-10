@@ -7,7 +7,6 @@ on:
         description: "The name of the tag to build"
         required: true
         type: string
-  workflow_dispatch: # 添加此项以支持手动触发和 API 调用
 
 jobs:
   build:

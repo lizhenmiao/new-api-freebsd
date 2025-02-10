@@ -24,23 +24,8 @@ jobs:
         run: |
           echo "Need to build the tag: ${{ env.LATEST_TAG }}"
 
-      - name: Debug Env Variables
-        run: |
-          echo "GITHUB_REPOSITORY_OWNER: $GITHUB_REPOSITORY_OWNER"
-          echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
-        shell: bash
-
       - name: Trigger Build for Latest Tag
         if: env.LATEST_TAG != env.CURRENT_TAG
-        uses: actions/github-script@v6
+        uses: ./.github/workflows/build_tag.yml # 调用方式改为 uses
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            console.log(process.env)
-            await github.rest.actions.createWorkflowDispatch({
-              owner: process.env.GITHUB_REPOSITORY_OWNER,
-              repo: process.env.GITHUB_REPOSITORY.split('/')[1],
-              workflow_id: 'build_tag.yml',
-              ref: 'main',
-              inputs: { tag_name: process.env.LATEST_TAG }
-            })
+          tag_name: ${{ env.LATEST_TAG }} # 传递输入参数
