@@ -24,9 +24,9 @@ jobs:
         run: |
           echo "Need to build the tag: ${{ env.LATEST_TAG }}"
 
-          - name: Checkout Code
-          if: env.LATEST_TAG != env.CURRENT_TAG
-          uses: actions/checkout@v4
+      - name: Checkout Code
+        if: env.LATEST_TAG != env.CURRENT_TAG
+        uses: actions/checkout@v4
 
       - name: Build Project
         if: env.LATEST_TAG != env.CURRENT_TAG
