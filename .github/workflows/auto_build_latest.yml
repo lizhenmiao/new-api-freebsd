@@ -9,20 +9,32 @@ jobs:
   check-latest:
     runs-on: ubuntu-latest
     outputs:
-      latest_tag: ${{ steps.latest_tag.outputs.LATEST_TAG }}
-      current_tag: ${{ steps.current_tag.outputs.CURRENT_TAG }}
+      LATEST_TAG: ${{ steps.set_latest_tag.outputs.LATEST_TAG }}
+      CURRENT_TAG: ${{ steps.set_current_tag.outputs.CURRENT_TAG }}
     steps:
       - name: Get Latest Tag from New API
-        id: latest_tag
+        id: get_latest_tag
         run: |
-          echo "LATEST_TAG=$(wget -qO- https://api.github.com/repos/Calcium-Ion/new-api/tags | gawk -F '\"' '/name/{print $4;exit}')" >> $GITHUB_ENV
-          echo "::set-output name=LATEST_TAG::$LATEST_TAG"
+          LATEST_TAG=$(wget -qO- https://api.github.com/repos/Calcium-Ion/new-api/tags | gawk -F '\"' '/name/{print $4;exit}')
+          echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
+
+      - name: Set Latest Tag Output
+        id: set_latest_tag
+        run: |
+          echo "::set-output name=LATEST_TAG::${{ env.LATEST_TAG }}"
+          echo "LATEST_TAG=${{ env.LATEST_TAG }}" >> $GITHUB_ENV
 
       - name: Get Latest Tag Built in Current Repo
-        id: current_tag
+        id: get_current_tag
         run: |
-          echo "CURRENT_TAG=$(wget -qO- https://api.github.com/repos/${{ github.repository }}/releases/latest | gawk -F '\"' '/tag_name/{print $4;exit}')" >> $GITHUB_ENV
-          echo "::set-output name=CURRENT_TAG::$CURRENT_TAG"
+          CURRENT_TAG=$(wget -qO- https://api.github.com/repos/${{ github.repository }}/releases/latest | gawk -F '\"' '/tag_name/{print $4;exit}')
+          echo "CURRENT_TAG=$CURRENT_TAG" >> $GITHUB_ENV
+
+      - name: Set Current Tag Output
+        id: set_current_tag
+        run: |
+          echo "::set-output name=CURRENT_TAG::${{ env.CURRENT_TAG }}"
+          echo "CURRENT_TAG=${{ env.CURRENT_TAG }}" >> $GITHUB_ENV
 
       - name: Compare Tags
         if: env.LATEST_TAG != env.CURRENT_TAG
@@ -32,7 +44,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     needs: check-latest
-    if: needs.check-latest.outputs.latest_tag != needs.check-latest.outputs.current_tag
+    if: needs.check-latest.outputs.LATEST_TAG != needs.check-latest.outputs.CURRENT_TAG
     steps:
     - uses: actions/checkout@v4
 
@@ -43,7 +55,7 @@ jobs:
 
     - name: Clone Repo
       run: |
-        git clone -b ${{ needs.check-latest.outputs.latest_tag }} https://github.com/Calcium-Ion/new-api
+        git clone -b ${{ needs.check-latest.outputs.LATEST_TAG }} https://github.com/Calcium-Ion/new-api
 
     - name: Build Project on FreeBSD
       uses: vmactions/freebsd-vm@v1
@@ -57,7 +69,7 @@ jobs:
         run: |
           cd new-api
           go mod download
-          go build -ldflags "-s -w -X 'github.com/Calcium-Ion/new-api/common.Version=${{ needs.check-latest.outputs.latest_tag }}' -extldflags '-static'" -o new-api
+          go build -ldflags "-s -w -X 'github.com/Calcium-Ion/new-api/common.Version=${{ needs.check-latest.outputs.LATEST_TAG }}' -extldflags '-static'" -o new-api
 
     - name: Upload artifact
       uses: actions/upload-artifact@v2
@@ -71,5 +83,5 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: ${{ needs.check-latest.outputs.latest_tag }}
+        tag_name: ${{ needs.check-latest.outputs.LATEST_TAG }}
         files: new-api
