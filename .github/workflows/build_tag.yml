@@ -1,18 +1,17 @@
 name: Build and Release Specific Tag
 
 on:
-  workflow_call: # 用于其他工作流调用
+  workflow_call:
     inputs:
       tag_name:
         description: "The name of the tag to build"
         required: true
         type: string
-  workflow_dispatch: # 添加此项以支持手动触发和 API 调用
+  workflow_dispatch: # 允许手动或 API 触发
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    name: Build Specific Tag
     steps:
       - uses: actions/checkout@v4
 
