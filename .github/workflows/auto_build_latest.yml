@@ -1,0 +1,39 @@
+name: Auto Build Latest Tag
+
+on:
+  schedule:
+    - cron: '0 19 * * *' # 每天 UTC 19:00，即北京时间 03:00
+  workflow_dispatch:
+
+jobs:
+  check-latest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get Latest Tag from New API
+        id: latest_tag
+        run: |
+          echo "LATEST_TAG=$(wget -qO- https://api.github.com/repos/Calcium-Ion/new-api/tags | gawk -F '\"' '/name/{print $4;exit}')" >> $GITHUB_ENV
+
+      - name: Get Latest Tag Built in Current Repo
+        id: current_tag
+        run: |
+          echo "CURRENT_TAG=$(wget -qO- https://api.github.com/repos/${{ github.repository }}/releases/latest | gawk -F '\"' '/tag_name/{print $4;exit}')" >> $GITHUB_ENV
+
+      - name: Compare Tags
+        if: env.LATEST_TAG != env.CURRENT_TAG
+        run: |
+          echo "Need to build the tag: ${{ env.LATEST_TAG }}"
+
+      - name: Trigger Build for Latest Tag
+        if: env.LATEST_TAG != env.CURRENT_TAG
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: github.repository.split('/')[0],
+              repo: github.repository.split('/')[1],
+              workflow_id: 'build_tag.yml',
+              ref: 'main',
+              inputs: { tag_name: process.env.LATEST_TAG }
+            })

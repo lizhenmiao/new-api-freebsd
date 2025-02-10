@@ -1,0 +1,57 @@
+name: Build and Release Specific Tag
+
+on:
+  workflow_call:
+    inputs:
+      tag_name:
+        description: "The name of the tag to build"
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Build Specific Tag
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 16
+
+      - name: Clone Repo
+        run: |
+          git clone https://github.com/Calcium-Ion/new-api
+          cd new-api
+          git checkout ${{ inputs.tag_name }}
+
+      - name: Build Project
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          release: 13.2
+          prepare: |
+            pkg install -y wget curl git gcc bash gawk gsed
+            wget https://dl.google.com/go/go1.22.0.freebsd-amd64.tar.gz && tar -C /usr/local -xzf go1.22.0.freebsd-amd64.tar.gz && rm go1.22.0.freebsd-amd64.tar.gz
+            ln -s /usr/local/go/bin/go /usr/local/bin/go
+          run: |
+            cd new-api
+            go mod download
+            go build -ldflags "-s -w -X 'github.com/Calcium-Ion/new-api/common.Version=${{ inputs.tag_name }}' -extldflags '-static'" -o new-api
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@main
+        with:
+          name: new-api
+          path: |
+            new-api
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ inputs.tag_name }}
+          files: |
+            new-api
