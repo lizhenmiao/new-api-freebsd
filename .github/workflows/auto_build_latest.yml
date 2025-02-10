@@ -32,6 +32,6 @@ jobs:
   call-build-tag:
     needs: check-latest
     if: needs.check-latest.outputs.LATEST_TAG != needs.check-latest.outputs.CURRENT_TAG
-    uses: ./.github/workflows/build_tag.yml
+    uses: ./.github/workflows/build_tag.yml@main
     with:
       tag_name: ${{ needs.check-latest.outputs.LATEST_TAG }}
