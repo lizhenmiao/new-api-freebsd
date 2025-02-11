@@ -66,6 +66,7 @@ jobs:
         with:
           node-version: 18
           cache: 'npm'
+          cache-dependency-path: 'new-api/web/package-lock.json'  # 关键修复点
 
       - name: Build Frontend
         working-directory: new-api/web
@@ -91,7 +92,7 @@ jobs:
           -o ../new-api
 
       - name: Upload artifact
-        uses: actions/upload-artifact@main
+        uses: actions/upload-artifact@v4
         with:
           name: new-api-freebsd
           path: new-api
