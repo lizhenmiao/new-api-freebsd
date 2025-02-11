@@ -1,0 +1,84 @@
+name: Build All Historical Tags
+
+on:
+  workflow_dispatch:  # 仅手动触发
+
+jobs:
+  check-tags:
+    runs-on: ubuntu-latest
+    outputs:
+      TAG_LIST: ${{ steps.generate-list.outputs.TAG_LIST }}
+    steps:
+      - name: Fetch all tags from source repo
+        id: get-tags
+        run: |
+          # 获取 Calcium-Ion/new-api 的所有 Tag（按时间升序排列）
+          TAGS_JSON=$(curl -s "https://api.github.com/repos/Calcium-Ion/new-api/tags?per_page=2" | jq -r 'sort_by(.commit.commit.author.date) | map(.name)')
+          echo "TAGS_JSON=$TAGS_JSON" >> $GITHUB_OUTPUT
+
+      - name: Filter existing tags
+        id: generate-list
+        run: |
+          # 检查当前仓库已存在的 Tag
+          EXISTING_TAGS=$(curl -s "https://api.github.com/repos/${{ github.repository }}/tags" | jq -r '.[].name')
+
+          # 生成需构建的 Tag 列表（跳过已存在的）
+          FILTERED_TAGS=$(echo '${{ steps.get-tags.outputs.TAGS_JSON }}' | jq --arg existing "$EXISTING_TAGS" -r '
+            map(select(. as $tag | ($existing | split("\n")) | index($tag) | not))
+          ')
+
+          echo "需要构建的 Tags: $FILTERED_TAGS"
+          echo "TAG_LIST=$FILTERED_TAGS" >> $GITHUB_OUTPUT
+
+  build-tags:
+    needs: check-tags
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        tag: ${{ fromJson(needs.check-tags.outputs.TAG_LIST) }}
+    steps:
+      - name: Checkout current repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Clone target tag
+        run: |
+          git clone -b ${{ matrix.tag }} --depth 1 https://github.com/Calcium-Ion/new-api
+
+      - name: Build Frontend
+        env:
+          CI: ""
+        run: |
+          cd new-api/web
+          npm install
+          REACT_APP_VERSION=${{ matrix.tag }} npm run build
+          cd ../..
+
+      - name: Build Backend (FreeBSD)
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          release: 13.2
+          prepare: |
+            pkg install -y jq wget curl git gcc bash gawk gsed
+            wget https://dl.google.com/go/go1.23.4.freebsd-amd64.tar.gz
+            tar -C /usr/local -xzf go1.23.4.freebsd-amd64.tar.gz
+            rm go1.23.4.freebsd-amd64.tar.gz
+            ln -s /usr/local/go/bin/go /usr/local/bin/go
+          run: |
+            cd new-api
+            go mod download
+            go build -ldflags "-s -w -X 'one-api/common.Version=${{ matrix.tag }}' -extldflags '-static'" -o new-api
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ matrix.tag }}
+          name: "Release ${{ matrix.tag }}"
+          files: new-api/new-api
