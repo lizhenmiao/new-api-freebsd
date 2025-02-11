@@ -55,13 +55,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Node.js with caching
+      - name: Setup Node.js with PNPM
         uses: actions/setup-node@v3
         with:
           node-version: 18
-          cache: 'npm'
+          cache: 'pnpm'
 
-      - name: Clone target repository
+      - name: Install PNPM
+        run: npm install -g pnpm
+
+      - name: Clone Repo
         run: |
           git clone --depth 1 --branch "${{ needs.check-latest.outputs.LATEST_TAG }}" \
             https://github.com/Calcium-Ion/new-api
@@ -72,8 +75,8 @@ jobs:
           CI: false
           REACT_APP_VERSION: ${{ needs.check-latest.outputs.LATEST_TAG }}
         run: |
-          npm ci --prefer-offline --no-audit
-          npm run build
+          pnpm install --frozen-lockfile
+          pnpm run build
 
       - name: Build Backend (FreeBSD)
         uses: vmactions/freebsd-vm@v1
