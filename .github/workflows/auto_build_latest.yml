@@ -19,7 +19,8 @@ jobs:
           script: |
             const { data: upstream } = await github.rest.repos.listTags({
               owner: 'Calcium-Ion',
-              repo: 'new-api'
+              repo: 'new-api',
+              per_page: 1
             })
 
             const current = await github.rest.repos.getLatestRelease({
