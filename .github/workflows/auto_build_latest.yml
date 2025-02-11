@@ -43,14 +43,23 @@ jobs:
             echo "NEED_BUILD=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Debug output
+        run: |
+          echo "Latest Tag: ${{ needs.check-latest.outputs.LATEST_TAG }}"
+          echo "Current Tag: ${{ needs.check-latest.outputs.CURRENT_TAG }}"
+          echo "Need Build: ${{ needs.check-latest.outputs.NEED_BUILD }}"
+
   build:
     runs-on: ubuntu-latest
     needs: check-latest
     if: needs.check-latest.outputs.NEED_BUILD == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source repo
+        uses: actions/checkout@v4
         with:
-          ref: ${{ needs.check-latest.outputs.LATEST_TAG }}
+          repository: Calcium-Ion/new-api # 明确指定源仓库
+          ref: ${{ needs.check-latest.outputs.LATEST_TAG }} # 直接使用完整tag名
+          path: new-api # 指定克隆目录
 
       - name: Setup Node.js
         uses: actions/setup-node@v3
@@ -59,7 +68,7 @@ jobs:
           cache: 'npm'
 
       - name: Build Frontend
-        working-directory: web
+        working-directory: new-api/web
         env:
           CI: false
           REACT_APP_VERSION: ${{ needs.check-latest.outputs.LATEST_TAG }}
@@ -74,11 +83,12 @@ jobs:
           cache: true
 
       - name: Build Backend
+        working-directory: new-api
         run: |
           # 使用跨平台编译代替 FreeBSD 虚拟机
           GOOS=freebsd GOARCH=amd64 \
           go build -ldflags "-s -w -X 'one-api/common.Version=${{ needs.check-latest.outputs.LATEST_TAG }}' -extldflags '-static'" \
-          -o new-api
+          -o ../new-api
 
       - name: Upload artifact
         uses: actions/upload-artifact@main
