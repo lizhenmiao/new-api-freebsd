@@ -9,8 +9,8 @@ jobs:
   check-latest:
     runs-on: ubuntu-latest
     outputs:
-      LATEST_TAG: ${{ steps.compare.outputs.LATEST_TAG }}
-      CURRENT_TAG: ${{ steps.compare.outputs.CURRENT_TAG }}
+      LATEST_TAG: ${{ steps.fetch-tags.outputs.latest }}
+      CURRENT_TAG: ${{ steps.fetch-tags.outputs.current }}
     steps:
       - name: Fetch tags
         uses: actions/github-script@v7
@@ -27,19 +27,13 @@ jobs:
               repo: context.repo.repo
             }).catch(() => ({ data: { tag_name: 'v0.0.0' } }))
 
-            const latest = upstream[0]?.name || 'v0.0.0'
-            console.log('latest===', latest, 'current===', current.data.tag_name)
+            const latest_tag = upstream[0]?.name || 'v0.0.0'
+            const current_tag = current.data.tag_name
 
-            return {
-              latest,
-              current: current.data.tag_name
-            }
+            console.log(`Latest tag: ${latest_tag}`, `Current tag: ${current_tag}`)
 
-      - name: Compare versions
-        id: compare
-        run: |
-          echo "LATEST_TAG=${{ steps.fetch-tags.outputs.result.latest }}" >> $GITHUB_OUTPUT
-          echo "CURRENT_TAG=${{ steps.fetch-tags.outputs.result.current }}" >> $GITHUB_OUTPUT
+            core.setOutput('latest', latest_tag);
+            core.setOutput('current', current_tag);
 
   build:
     runs-on: ubuntu-latest
