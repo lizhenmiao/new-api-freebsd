@@ -27,9 +27,13 @@ jobs:
               repo: context.repo.repo
             }).catch(() => ({ data: { tag_name: 'v0.0.0' } }))
 
+            const latest = upstream[0]?.name || 'v0.0.0'
+            const current = current.data.tag_name
+            console.log('latest===', latest, 'current===', current)
+
             return {
-              latest: upstream[0]?.name || 'v0.0.0',
-              current: current.data.tag_name
+              latest,
+              current
             }
 
       - name: Compare versions
