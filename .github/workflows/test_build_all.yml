@@ -17,31 +17,42 @@ jobs:
     outputs:
       matrix: ${{ steps.setup.outputs.matrix }}
     steps:
-    - name: Validate test tags
+    - name: Validate inputs
       id: validate
       if: inputs.test_mode == 'true'
+      run: |
+        # 检查测试标签是否提供
+        if [ -z "${{ inputs.test_tags }}" ]; then
+          echo "::error::Test mode requires at least one test tag"
+          exit 1
+        fi
+
+        # 分割标签并去除空格
+        TAGS=$(echo "${{ inputs.test_tags }}" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | tr '\n' ',')
+        echo "TAGS=${TAGS%,}" >> $GITHUB_OUTPUT
+
+    - name: Verify tags existence
+      if: inputs.test_mode == 'true'
       uses: actions/github-script@v7
+      env:
+        TAGS: ${{ steps.validate.outputs.TAGS }}
       with:
         script: |
-          const testTags = process.env.INPUT_TEST_TAGS?.split(',')?.filter(Boolean) || []
-          if (testTags.length === 0) {
-            core.setFailed('Test mode requires at least one test tag')
-          }
-
+          const tags = process.env.TAGS?.split(',') || []
           const { data: validTags } = await github.rest.repos.listTags({
             owner: 'Calcium-Ion',
             repo: 'new-api'
           })
 
-          const invalid = testTags.filter(t =>
+          const invalid = tags.filter(t =>
             !validTags.some(vt => vt.name === t)
           )
 
           if (invalid.length > 0) {
-            core.setFailed(`Invalid tags: ${invalid.join(', ')}`)
+            core.setFailed(`Invalid tags: ${invalid.join(', ')}\nValid tags: ${validTags.map(t => t.name).join(', ')}`)
           }
 
-          core.setOutput('valid_tags', testTags)
+          core.setOutput('valid_tags', tags)
 
     - name: Prepare build list
       id: setup
@@ -51,8 +62,8 @@ jobs:
           TAGS='${{ steps.validate.outputs.valid_tags }}'
         else
           # 正常模式：获取所有未构建标签
-          curl -s https://api.github.com/repos/Calcium-Ion/new-api/tags?per_page=100 > tags.json
-          curl -s https://api.github.com/repos/$GITHUB_REPOSITORY/releases?per_page=100 > releases.json
+          curl -s "https://api.github.com/repos/Calcium-Ion/new-api/tags?per_page=100" > tags.json
+          curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
 
           jq -r '.[].name' tags.json > all_tags.txt
           jq -r '.[].tag_name' releases.json > existing.txt
@@ -62,7 +73,7 @@ jobs:
           TAGS=$(cat missing.txt)
         fi
 
-        # 生成矩阵（修复JSON格式）
+        # 生成矩阵
         if [ -z "$TAGS" ]; then
           echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
         else
@@ -76,7 +87,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
-      max-parallel: ${{ inputs.test_mode == 'true' && 3 || 10 }}
+      max-parallel: 5
       fail-fast: false
 
     steps:
