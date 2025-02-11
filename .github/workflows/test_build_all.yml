@@ -1,0 +1,106 @@
+name: Smart Tag Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'Enable test mode (true/false)'
+        required: false
+        default: 'false'
+      test_tags:
+        description: 'Comma-separated tags to test (e.g. v1.0.0,v1.0.1)'
+        required: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.setup.outputs.matrix }}
+    steps:
+    - name: Validate test tags
+      id: validate
+      if: inputs.test_mode == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          // 验证测试标签是否有效
+          const testTags = process.env.INPUT_TEST_TAGS?.split(',') || []
+          const { data: validTags } = await github.rest.repos.listTags({
+            owner: 'Calcium-Ion',
+            repo: 'new-api'
+          })
+
+          const invalid = testTags.filter(t =>
+            !validTags.some(vt => vt.name === t)
+          )
+
+          if (invalid.length > 0) {
+            core.setFailed(`Invalid tags: ${invalid.join(', ')}`)
+          }
+
+          return testTags
+
+    - name: Prepare build list
+      id: setup
+      run: |
+        if [ "${{ inputs.test_mode }}" = "true" ]; then
+          # 测试模式：使用手动指定的标签
+          TAGS='${{ steps.validate.outputs.result }}'
+        else
+          # 正常模式：获取所有未构建标签
+          curl -s https://api.github.com/repos/Calcium-Ion/new-api/tags > tags.json
+          curl -s https://api.github.com/repos/$GITHUB_REPOSITORY/releases > releases.json
+
+          jq -r '.[].name' tags.json > all_tags.txt
+          jq -r '.[].tag_name' releases.json > existing.txt
+
+          # 生成缺失标签列表
+          grep -Fxvf existing.txt all_tags.txt > missing.txt
+          TAGS=$(tr '\n' ',' < missing.txt | sed 's/,$//')
+        fi
+
+        # 生成矩阵
+        echo "matrix={\"include\":[$(echo $TAGS | awk -F, '{for(i=1;i<=NF;i++) printf "{\"tag\":\"%s\"},", $i}' | sed 's/,$//')]}" >> $GITHUB_OUTPUT
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+      max-parallel: 5
+      fail-fast: false
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup project
+      run: |
+        git clone -b ${{ matrix.tag }} --depth 1 https://github.com/Calcium-Ion/new-api
+
+    - name: Build Frontend
+      working-directory: new-api/web
+      run: |
+        npm ci
+        REACT_APP_VERSION=${{ matrix.tag }} npm run build
+
+    - name: Build Backend
+      uses: vmactions/freebsd-vm@v1
+      with:
+        usesh: true
+        release: 13.2
+        prepare: |
+          pkg install -y jq wget curl git gcc bash gawk gsed
+          wget https://dl.google.com/go/go1.23.4.freebsd-amd64.tar.gz
+          tar -C /usr/local -xzf go1.23.4.freebsd-amd64.tar.gz
+          ln -s /usr/local/go/bin/go /usr/local/bin/go
+        run: |
+          cd new-api
+          go mod download
+          go build -ldflags "-s -w -X 'one-api/common.Version=${{ matrix.tag }}' -extldflags '-static'" -o new-api
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ matrix.tag }}
+        files: new-api/new-api

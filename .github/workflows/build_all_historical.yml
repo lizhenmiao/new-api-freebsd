@@ -1,102 +1,84 @@
-name: Hyper Parallel Builder
+name: Optimized Parallel Builder
 
 on:
   workflow_dispatch:
     inputs:
-      concurrency_level:
-        description: "Max parallel jobs (default 10)"
+      concurrency:
+        description: "Max parallel jobs"
         required: false
-        default: "10"
+        default: '10'
 
 jobs:
-  tag-processor:
+  prepare:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.process.outputs.matrix }}
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-    - name: Query tags via GraphQL
+    - name: Fetch upstream tags
       uses: actions/github-script@v7
-      id: graphql
+      id: fetch-tags
       with:
         script: |
-          const query = `query ($owner: String!, $repo: String!, $cursor: String) {
-            source: repository(owner: $owner, name: $repo) {
-              refs(refPrefix: "refs/tags/", first: 100, after: $cursor, orderBy: {field: TAG_COMMIT_DATE, direction: ASC}) {
-                nodes { name }
-                pageInfo { endCursor hasNextPage }
-              }
-            }
-            target: repository(owner: context.repo.owner, name: context.repo.repo) {
-              releases(first: 100) {
-                nodes { tagName }
-              }
-            }
-          }`;
-
-          let allTags = [];
-          let cursor = null;
-          do {
-            const result = await github.graphql(query, {
+          const { data: tags } = await github.paginate(
+            github.rest.repos.listTags, {
               owner: 'Calcium-Ion',
               repo: 'new-api',
-              cursor
-            });
+              per_page: 100
+            }
+          )
+          return tags.map(t => t.name)
 
-            allTags.push(...result.source.refs.nodes.map(n => n.name));
-            cursor = result.source.refs.pageInfo.hasNextPage ? result.source.refs.pageInfo.endCursor : null;
-          } while (cursor)
+    - name: Get existing releases
+      uses: actions/github-script@v7
+      id: existing-releases
+      with:
+        script: |
+          const { data: releases } = await github.rest.repos.listReleases({
+            owner: context.repo.owner,
+            repo: context.repo.repo
+          })
+          return releases.map(r => r.tag_name)
 
-          const existing = new Set(result.target.releases.nodes.map(n => n.tagName));
-          const missing = allTags.filter(t => !existing.has(t));
-
-          return { missing, allTags };
-
-    - name: Generate dynamic matrix
-      id: process
+    - name: Generate build matrix
+      id: set-matrix
       run: |
-        # 从GitHub Script获取数据
-        MISSING_TAGS=${{ toJson(steps.graphql.outputs.result.missing) }}
-        ALL_TAGS=${{ toJson(steps.graphql.outputs.result.allTags) }}
+        # 修正后的正确格式
+        all_tags=(${{ toJson(steps.fetch-tags.outputs.result) }})
+        existing=(${{ toJson(steps.existing-releases.outputs.result) }})
 
-        # 生成动态矩阵
-        readarray -t tags < <(jq -r '.[]' <<< "$MISSING_TAGS")
-        matrix_json="{\"include\":[]}"
-
-        for tag in "${tags[@]}"; do
-          matrix_json=$(jq --arg tag "$tag" \
-            '.include += [{"tag": $tag}]' <<< "$matrix_json")
+        missing=()
+        for tag in "${all_tags[@]}"; do
+          if [[ ! " ${existing[*]} " =~ " ${tag} " ]]; then
+            missing+=("$tag")
+          fi
         done
 
-        echo "matrix=$matrix_json" >> $GITHUB_OUTPUT
+        # 生成矩阵格式
+        matrix_json=$(jq -n --argjson tags "$(printf '%s\n' "${missing[@]}" | jq -R . | jq -s .)" \
+          '{include: $tags | map({tag: .})}')
+
+        echo "matrix=${matrix_json}" >> $GITHUB_OUTPUT
 
   build:
-    needs: tag-processor
+    needs: prepare
     runs-on: ubuntu-latest
     strategy:
-      matrix: ${{ fromJson(needs.tag-processor.outputs.matrix) }}
-      max-parallel: ${{ inputs.concurrency_level }}
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+      max-parallel: ${{ inputs.concurrency }}
       fail-fast: false
+
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-    - name: Cache dependencies
-      uses: actions/cache@v3
-      with:
-        path: |
-          new-api/web/node_modules
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-${{ matrix.tag }}-${{ hashFiles('new-api/web/package-lock.json', 'new-api/go.mod') }}
-
-    - name: Setup Environment
+    - name: Setup project
       run: |
         git clone -b ${{ matrix.tag }} --depth 1 https://github.com/Calcium-Ion/new-api
 
     - name: Build Frontend
       working-directory: new-api/web
-      env:
-        CI: false
       run: |
-        npm ci --silent
+        npm ci
         REACT_APP_VERSION=${{ matrix.tag }} npm run build
 
     - name: Build Backend
@@ -104,8 +86,6 @@ jobs:
       with:
         usesh: true
         release: 13.2
-        env:
-          TAG: ${{ matrix.tag }}
         prepare: |
           pkg install -y jq wget curl git gcc bash gawk gsed
           wget https://dl.google.com/go/go1.23.4.freebsd-amd64.tar.gz
@@ -114,7 +94,7 @@ jobs:
         run: |
           cd new-api
           go mod download
-          go build -ldflags "-s -w -X 'one-api/common.Version=$TAG' -extldflags '-static'" -o new-api
+          go build -ldflags "-s -w -X 'one-api/common.Version=${{ matrix.tag }}' -extldflags '-static'" -o new-api
 
     - name: Create Release
       uses: softprops/action-gh-release@v1
