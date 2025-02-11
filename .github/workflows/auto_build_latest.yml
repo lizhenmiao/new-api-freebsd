@@ -1,39 +1,43 @@
-name: Auto Build Latest Tag
+name: Optimized Auto Build Latest Tag
 
 on:
   schedule:
-    - cron: '0 19 * * *'  # UTC 19:00 (北京时间 03:00)
+    - cron: '0 19 * * *' # UTC 19:00 (北京时间 03:00)
   workflow_dispatch:
 
 jobs:
   check-latest:
     runs-on: ubuntu-latest
     outputs:
-      LATEST_TAG: ${{ steps.fetch-tags.outputs.latest }}
-      CURRENT_TAG: ${{ steps.fetch-tags.outputs.current }}
+      LATEST_TAG: ${{ steps.get_latest.outputs.LATEST_TAG }}
+      CURRENT_TAG: ${{ steps.get_current.outputs.CURRENT_TAG }}
     steps:
-      - name: Fetch tags
-        uses: actions/github-script@v7
-        id: fetch-tags
+      - name: Get Latest Tag
+        id: get_latest
+        uses: actions/github-script@v6
         with:
           script: |
-            const { data: upstream } = await github.rest.repos.listTags({
+            const { data: tags } = await github.rest.repos.listTags({
               owner: 'Calcium-Ion',
-              repo: 'new-api'
+              repo: 'new-api',
             })
+            const latestTag = tags.find(t => t.name.startsWith('v')).name
+            core.setOutput('LATEST_TAG', latestTag)
 
-            const current = await github.rest.repos.getLatestRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo
-            }).catch(() => ({ data: { tag_name: 'v0.0.0' } }))
-
-            const latest_tag = upstream[0]?.name || 'v0.0.0'
-            const current_tag = current.data.tag_name
-
-            console.log(`Latest tag: ${latest_tag}`, `Current tag: ${current_tag}`)
-
-            core.setOutput('latest', latest_tag);
-            core.setOutput('current', current_tag);
+      - name: Get Current Release
+        id: get_current
+        uses: actions/github-script@v6
+        with:
+          script: |
+            try {
+              const { data: release } = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+              })
+              core.setOutput('CURRENT_TAG', release.tag_name)
+            } catch (error) {
+              core.setOutput('CURRENT_TAG', 'v0.0.0')
+            }
 
   build:
     runs-on: ubuntu-latest
@@ -41,24 +45,33 @@ jobs:
     if: needs.check-latest.outputs.LATEST_TAG != needs.check-latest.outputs.CURRENT_TAG
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: 18
+          cache: 'npm'
 
-      - name: Clone Repo
+      - name: Checkout Target Code
         run: |
-          git clone -b ${{ needs.check-latest.outputs.LATEST_TAG }} https://github.com/Calcium-Ion/new-api
+          git clone --depth 1 --branch ${{ needs.check-latest.outputs.LATEST_TAG }} https://github.com/Calcium-Ion/new-api
 
       - name: Build Frontend
+        working-directory: new-api/web
         env:
-          CI: ""
+          CI: false
+          REACT_APP_VERSION: ${{ needs.check-latest.outputs.LATEST_TAG }}
         run: |
-          cd new-api/web
-          npm install
-          REACT_APP_VERSION=${{ needs.check-latest.outputs.LATEST_TAG }} npm run build
-          cd ../..
+          npm ci --prefer-offline
+          npm run build
+
+      - name: Setup Go for BSD
+        uses: crazy-max/ghaction-setup-go@v2
+        with:
+          version: '1.23.4'
 
       - name: Build Backend
         uses: vmactions/freebsd-vm@v1
@@ -66,24 +79,19 @@ jobs:
           usesh: true
           release: 13.2
           prepare: |
-            pkg install -y jq wget curl git gcc bash gawk gsed
-            wget https://dl.google.com/go/go1.23.4.freebsd-amd64.tar.gz
-            tar -C /usr/local -xzf go1.23.4.freebsd-amd64.tar.gz
-            rm go1.23.4.freebsd-amd64.tar.gz
-            ln -s /usr/local/go/bin/go /usr/local/bin/go
+            pkg install -y jq git gawk gsed
           run: |
-            git config --global --add safe.directory /home/runner/work/new-api-freebsd/new-api-freebsd/new-api
             cd new-api
             go mod download
-            go build -ldflags "-s -w -X 'one-api/common.Version=${{ needs.check-latest.outputs.LATEST_TAG }}' -extldflags '-static'" -o new-api
+            CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X 'one-api/common.Version=${{ needs.check-latest.outputs.LATEST_TAG }}'" -o new-api
 
-      - name: Upload artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@main
         with:
           name: new-api-freebsd
           path: new-api/new-api
 
-      - name: Create release
+      - name: Create Release
         uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
