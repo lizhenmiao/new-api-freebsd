@@ -87,13 +87,13 @@ jobs:
           # 使用跨平台编译代替 FreeBSD 虚拟机
           GOOS=freebsd GOARCH=amd64 \
           go build -ldflags "-s -w -X 'one-api/common.Version=${{ needs.check-latest.outputs.LATEST_TAG }}' -extldflags '-static'" \
-          -o new-api
+          -o ./new-api
 
       - name: Upload artifact
         uses: actions/upload-artifact@main
         with:
           name: new-api-freebsd
-          path: new-api
+          path: new-api/new-api
 
       - name: Create release
         uses: softprops/action-gh-release@v1
@@ -101,4 +101,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ needs.check-latest.outputs.LATEST_TAG }}
-          files: new-api
+          files: new-api/new-api
