@@ -26,34 +26,48 @@ jobs:
           echo "::error::Test mode requires 'test_tags' input"
           exit 1
         fi
+        echo "TEST_TAGS=${{ inputs.test_tags }}" >> $GITHUB_ENV
 
     - name: Get valid tags
       id: get-tags
       uses: actions/github-script@v7
+      env:
+        UPSTREAM_TOKEN: ${{ secrets.UPSTREAM_TOKEN }}
       with:
         script: |
           const isTestMode = '${{ inputs.test_mode }}' === 'true';
 
-          // 安全处理输入标签
-          const inputTags = process.env.INPUT_TEST_TAGS?.split(',')?.map(t => t.trim())?.filter(Boolean) || [];
+          // 增强输入处理
+          const inputTags = process.env.TEST_TAGS
+            ? process.env.TEST_TAGS.split(',').map(t => t.trim()).filter(Boolean)
+            : [];
 
-          // 获取有效标签
-          const { data: upstreamTags } = await github.paginate(
-            github.rest.repos.listTags, {
+          // 带认证的API请求
+          const octokit = github.getOctokit(process.env.UPSTREAM_TOKEN)
+
+          // 获取上游标签
+          const { data: upstreamTags } = await octokit.paginate(
+            octokit.rest.repos.listTags, {
               owner: 'Calcium-Ion',
               repo: 'new-api',
               per_page: 100
             }
           );
 
-          // 获取已存在的release
-          const { data: existingReleases } = await github.paginate(
-            github.rest.repos.listReleases, {
+          // 获取现有发布
+          const { data: existingReleases } = await octokit.paginate(
+            octokit.rest.repos.listReleases, {
               owner: context.repo.owner,
-              repo: context.repo.repo
+              repo: context.repo.repo,
+              per_page: 100
             }
           );
 
+          // 调试输出
+          console.log('Upstream tags:', upstreamTags.map(t => t.name));
+          console.log('Existing releases:', existingReleases.map(r => r.tag_name));
+
+          // 处理有效标签
           const validTags = isTestMode
             ? inputTags.filter(t => upstreamTags.some(ut => ut.name === t))
             : upstreamTags.map(t => t.name);
@@ -62,14 +76,15 @@ jobs:
             !existingReleases.some(r => r.tag_name === t)
           );
 
+          console.log('Missing tags:', missingTags);
           core.setOutput('result', missingTags)
           core.setOutput('has_tags', missingTags.length > 0 ? 'true' : 'false')
 
     - name: Generate build matrix
       id: setup
       run: |
-        # 安全处理JSON输出
-        HAS_TAGS=${{ steps.get-tags.outputs.has_tags }}
+        # 处理空值情况
+        HAS_TAGS=${{ steps.get-tags.outputs.has_tags || 'false' }}
         TAGS=${{ steps.get-tags.outputs.result || '[]' }}
 
         if [ "$HAS_TAGS" = "true" ]; then
