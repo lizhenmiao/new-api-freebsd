@@ -1,10 +1,10 @@
-name: Robust Tag Builder
+name: Stable Tag Builder
 
 on:
   workflow_dispatch:
     inputs:
       test_mode:
-        description: 'Enable test mode (true/false)'
+        description: 'Enable test mode'
         required: false
         default: 'false'
       test_tags:
@@ -16,13 +16,13 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.setup.outputs.matrix }}
-      has_tags: ${{ steps.setup.outputs.has_tags }}
     steps:
     - name: Validate test inputs
-      if: inputs.test_mode == 'true'
+      id: validate
+      if: ${{ inputs.test_mode == 'true' }}
       run: |
         if [ -z "${{ inputs.test_tags }}" ]; then
-          echo "::error::Test mode requires test_tags input"
+          echo "::error::Test mode requires 'test_tags' input"
           exit 1
         fi
 
@@ -31,58 +31,47 @@ jobs:
       uses: actions/github-script@v7
       with:
         script: |
-          const mode = '${{ inputs.test_mode }}' === 'true'
-          let tags = []
+          const isTestMode = '${{ inputs.test_mode }}' === 'true';
 
-          if (mode) {
-            // 测试模式：处理输入的标签
-            tags = process.env.INPUT_TEST_TAGS
-              .split(',')
-              .map(t => t.trim())
-              .filter(Boolean)
-          } else {
-            // 正常模式：获取所有上游标签
-            const { data } = await github.paginate(
-              github.rest.repos.listTags, {
-                owner: 'Calcium-Ion',
-                repo: 'new-api',
-                per_page: 100
-              }
-            )
-            tags = data.map(t => t.name)
-          }
+          // 安全处理输入标签
+          const inputTags = process.env.INPUT_TEST_TAGS?.split(',').map(t => t.trim()).filter(Boolean) || [];
 
-          // 获取现有release
-          const { data: releases } = await github.paginate(
+          // 获取有效标签
+          const { data: upstreamTags } = await github.paginate(
+            github.rest.repos.listTags, {
+              owner: 'Calcium-Ion',
+              repo: 'new-api',
+              per_page: 100
+            }
+          );
+
+          // 获取已存在的release
+          const { data: existingReleases } = await github.paginate(
             github.rest.repos.listReleases, {
               owner: context.repo.owner,
               repo: context.repo.repo
             }
-          )
-          const existing = new Set(releases.map(r => r.tag_name))
+          );
 
-          // 过滤未构建的标签
-          const missing = tags.filter(t => !existing.has(t))
+          const validTags = isTestMode
+            ? inputTags.filter(t => upstreamTags.some(ut => ut.name === t))
+            : upstreamTags.map(t => t.name);
 
-          core.setOutput('tags', JSON.stringify(missing))
-          core.setOutput('has_tags', missing.length > 0 ? 'true' : 'false')
+          const missingTags = validTags.filter(t =>
+            !existingReleases.some(r => r.tag_name === t)
+          );
 
-    - name: Generate matrix
+          return missingTags;
+
+    - name: Generate build matrix
       id: setup
       run: |
-        TAGS=${{ steps.get-tags.outputs.tags }}
-        HAS_TAGS=${{ steps.get-tags.outputs.has_tags }}
-
-        if [ "$HAS_TAGS" = "false" ]; then
-          echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
-          echo "No tags to build"
-          exit 0
-        fi
+        # 安全处理JSON输出
+        TAGS=${{ toJson(steps.get-tags.outputs.result) || '[]' }}
 
         # 生成矩阵配置
         matrix_json=$(echo "$TAGS" | jq -c '{include: map({tag: .})}')
         echo "matrix=${matrix_json}" >> $GITHUB_OUTPUT
-        echo "Generated matrix: ${matrix_json}"
 
   build:
     needs: prepare
@@ -90,14 +79,11 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
-      max-parallel: ${{ inputs.test_mode == 'true' && 3 || 10 }}
+      max-parallel: 5
       fail-fast: false
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Clone target version
+    - name: Clone repository
       run: |
         echo "Building tag: ${{ matrix.tag }}"
         git clone -b "${{ matrix.tag }}" --depth 1 \
