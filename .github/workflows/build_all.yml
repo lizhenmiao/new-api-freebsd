@@ -94,41 +94,45 @@ jobs:
             wget https://dl.google.com/go/go1.23.4.freebsd-amd64.tar.gz
             tar -C /usr/local -xzf go1.23.4.freebsd-amd64.tar.gz
             ln -s /usr/local/go/bin/go /usr/local/bin/go
-            mkdir -p /builds
           run: |
-            set -e
+            set -xe
             IFS=' ' read -ra TAGS <<< "${{ needs.prepare.outputs.build_list }}"
-            OUTPUT_DIR="$GITHUB_WORKSPACE/releases"
+
+            # 使用 GitHub 工作区标准路径
+            WORKSPACE="/github/workspace"
+            OUTPUT_DIR="$WORKSPACE/releases"
             mkdir -p "$OUTPUT_DIR"
 
             for TAG in "${TAGS[@]}"; do
               echo "=== 构建 $TAG ==="
-              BUILD_DIR="/builds/$TAG"
-              mkdir -p "$BUILD_DIR"
-              cd "$BUILD_DIR"
+              BUILD_DIR=$(mktemp -d)
 
-              git clone -b "$TAG" --depth 1 https://github.com/Calcium-Ion/new-api src
+              # 克隆代码
+              git clone -b "$TAG" --depth 1 https://github.com/Calcium-Ion/new-api "$BUILD_DIR"
 
-              # 构建前端
-              cd src/web
+              # 前端构建
+              cd "$BUILD_DIR/web"
               npm ci --prefer-offline --no-audit --no-fund --loglevel=error
               REACT_APP_VERSION="$TAG" npm run build --silent
 
-              # 构建后端
+              # 后端构建
               cd ..
               go mod download
               go build -ldflags "-s -w -X 'one-api/common.Version=$TAG' -extldflags '-static'" -o "$OUTPUT_DIR/new-api-$TAG"
 
-              # 清理构建目录
-              cd ../..
+              # 清理
               rm -rf "$BUILD_DIR"
+              echo "=== $TAG 构建完成 ==="
             done
 
+            # 验证文件存在
+            ls -lh "$OUTPUT_DIR"
+
       - name: 上传制品
-        uses: actions/upload-artifact@main
+        uses: actions/upload-artifact@v3
         with:
           name: freebsd-binaries
-          path: ${{ github.workspace }}/releases/new-api-*
+          path: ./releases/new-api-*
           retention-days: 3
 
       - name: 批量发布版本
