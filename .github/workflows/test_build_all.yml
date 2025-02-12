@@ -1,4 +1,4 @@
-name: Smart Tag Builder
+name: Robust Tag Builder
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: false
         default: 'false'
       test_tags:
-        description: 'Comma-separated tags to test (e.g. v1.0.0,v1.0.1)'
+        description: 'Comma-separated tags (e.g. v1.0.0,v1.0.1)'
         required: false
 
 jobs:
@@ -16,70 +16,73 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.setup.outputs.matrix }}
+      has_tags: ${{ steps.setup.outputs.has_tags }}
     steps:
-    - name: Validate inputs
-      id: validate
+    - name: Validate test inputs
       if: inputs.test_mode == 'true'
       run: |
-        # 检查测试标签是否提供
         if [ -z "${{ inputs.test_tags }}" ]; then
-          echo "::error::Test mode requires at least one test tag"
+          echo "::error::Test mode requires test_tags input"
           exit 1
         fi
 
-        # 分割标签并去除空格
-        TAGS=$(echo "${{ inputs.test_tags }}" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | tr '\n' ',')
-        echo "TAGS=${TAGS%,}" >> $GITHUB_OUTPUT
-
-    - name: Verify tags existence
-      if: inputs.test_mode == 'true'
+    - name: Get valid tags
+      id: get-tags
       uses: actions/github-script@v7
-      env:
-        TAGS: ${{ steps.validate.outputs.TAGS }}
       with:
         script: |
-          const tags = process.env.TAGS?.split(',') || []
-          const { data: validTags } = await github.rest.repos.listTags({
-            owner: 'Calcium-Ion',
-            repo: 'new-api'
-          })
+          const mode = '${{ inputs.test_mode }}' === 'true'
+          let tags = []
 
-          const invalid = tags.filter(t =>
-            !validTags.some(vt => vt.name === t)
-          )
-
-          if (invalid.length > 0) {
-            core.setFailed(`Invalid tags: ${invalid.join(', ')}\nValid tags: ${validTags.map(t => t.name).join(', ')}`)
+          if (mode) {
+            // 测试模式：处理输入的标签
+            tags = process.env.INPUT_TEST_TAGS
+              .split(',')
+              .map(t => t.trim())
+              .filter(Boolean)
+          } else {
+            // 正常模式：获取所有上游标签
+            const { data } = await github.paginate(
+              github.rest.repos.listTags, {
+                owner: 'Calcium-Ion',
+                repo: 'new-api',
+                per_page: 100
+              }
+            )
+            tags = data.map(t => t.name)
           }
 
-          core.setOutput('valid_tags', tags)
+          // 获取现有release
+          const { data: releases } = await github.paginate(
+            github.rest.repos.listReleases, {
+              owner: context.repo.owner,
+              repo: context.repo.repo
+            }
+          )
+          const existing = new Set(releases.map(r => r.tag_name))
 
-    - name: Prepare build list
+          // 过滤未构建的标签
+          const missing = tags.filter(t => !existing.has(t))
+
+          core.setOutput('tags', JSON.stringify(missing))
+          core.setOutput('has_tags', missing.length > 0 ? 'true' : 'false')
+
+    - name: Generate matrix
       id: setup
       run: |
-        if [ "${{ inputs.test_mode }}" = "true" ]; then
-          # 测试模式：使用验证后的标签
-          TAGS='${{ steps.validate.outputs.valid_tags }}'
-        else
-          # 正常模式：获取所有未构建标签
-          curl -s "https://api.github.com/repos/Calcium-Ion/new-api/tags?per_page=100" > tags.json
-          curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
+        TAGS=${{ steps.get-tags.outputs.tags }}
+        HAS_TAGS=${{ steps.get-tags.outputs.has_tags }}
 
-          jq -r '.[].name' tags.json > all_tags.txt
-          jq -r '.[].tag_name' releases.json > existing.txt
-
-          # 生成缺失标签列表
-          grep -Fxvf existing.txt all_tags.txt | tr '\n' ',' | sed 's/,$//' > missing.txt
-          TAGS=$(cat missing.txt)
-        fi
-
-        # 生成矩阵
-        if [ -z "$TAGS" ]; then
+        if [ "$HAS_TAGS" = "false" ]; then
           echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
-        else
-          matrix_json=$(echo "$TAGS" | jq -R 'split(",") | map(select(. != "")) | {include: map({tag: .})}')
-          echo "matrix=$matrix_json" >> $GITHUB_OUTPUT
+          echo "No tags to build"
+          exit 0
         fi
+
+        # 生成矩阵配置
+        matrix_json=$(echo "$TAGS" | jq -c '{include: map({tag: .})}')
+        echo "matrix=${matrix_json}" >> $GITHUB_OUTPUT
+        echo "Generated matrix: ${matrix_json}"
 
   build:
     needs: prepare
@@ -87,22 +90,23 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
-      max-parallel: 5
+      max-parallel: ${{ inputs.test_mode == 'true' && 3 || 10 }}
       fail-fast: false
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Clone repository
+    - name: Clone target version
       run: |
-        echo "Cloning tag: ${{ matrix.tag }}"
-        git clone -b "${{ matrix.tag }}" --depth 1 https://github.com/Calcium-Ion/new-api
+        echo "Building tag: ${{ matrix.tag }}"
+        git clone -b "${{ matrix.tag }}" --depth 1 \
+          https://github.com/Calcium-Ion/new-api
 
     - name: Build Frontend
       working-directory: new-api/web
       run: |
-        npm ci
+        npm ci --no-audit --prefer-offline
         REACT_APP_VERSION="${{ matrix.tag }}" npm run build
 
     - name: Build Backend
