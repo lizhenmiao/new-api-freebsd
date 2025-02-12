@@ -18,7 +18,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 获取按时间排序的tag列表（旧到新）
           all_tags=()
           page=1
           while :; do
@@ -35,7 +34,6 @@ jobs:
       - name: 获取已发布版本
         id: get-released
         run: |
-          # 使用GitHub CLI获取已发布版本
           released_tags=$(gh release list --limit 1000 | awk '{print $1}')
           echo "released_tags=${released_tags[*]}" >> $GITHUB_OUTPUT
 
@@ -55,7 +53,6 @@ jobs:
             [[ -z "${released_map[$tag]}" ]] && build_list+=("$tag")
           done
 
-          # 测试模式处理
           if [ -n "${{ github.event.inputs.test_tags }}" ]; then
             IFS=',' read -ra test_tags <<< "${{ github.event.inputs.test_tags }}"
             build_list=("${test_tags[@]}")
@@ -83,28 +80,30 @@ jobs:
       - name: 安装GitHub CLI
         run: sudo apt-get update && sudo apt-get install -y gh
 
-      - name: 批量构建 (FreeBSD)
+      - name: FreeBSD 构建
         uses: vmactions/freebsd-vm@v1
+        id: freebsd-build
         with:
           usesh: true
           release: 13.2
           prepare: |
             pkg update -y
-            pkg install -y git gcc bash gmake go120 node npm
-            wget https://dl.google.com/go/go1.23.4.freebsd-amd64.tar.gz
+            pkg install -y git gcc bash gmake go120 node npm rsync
+            wget -q https://dl.google.com/go/go1.23.4.freebsd-amd64.tar.gz
             tar -C /usr/local -xzf go1.23.4.freebsd-amd64.tar.gz
-            ln -s /usr/local/go/bin/go /usr/local/bin/go
+            ln -sf /usr/local/go/bin/go /usr/local/bin/go
           run: |
             set -xe
             IFS=' ' read -ra TAGS <<< "${{ needs.prepare.outputs.build_list }}"
 
-            # 使用 GitHub 工作区标准路径
+            # 定义工作区路径
             WORKSPACE="/github/workspace"
             OUTPUT_DIR="$WORKSPACE/releases"
             mkdir -p "$OUTPUT_DIR"
+            chmod 777 "$OUTPUT_DIR"
 
             for TAG in "${TAGS[@]}"; do
-              echo "=== 构建 $TAG ==="
+              echo "=== 开始构建 $TAG ==="
               BUILD_DIR=$(mktemp -d)
 
               # 克隆代码
@@ -116,7 +115,7 @@ jobs:
               REACT_APP_VERSION="$TAG" npm run build --silent
 
               # 后端构建
-              cd ..
+              cd "$BUILD_DIR"
               go mod download
               go build -ldflags "-s -w -X 'one-api/common.Version=$TAG' -extldflags '-static'" -o "$OUTPUT_DIR/new-api-$TAG"
 
@@ -125,26 +124,43 @@ jobs:
               echo "=== $TAG 构建完成 ==="
             done
 
-            # 验证文件存在
+            # 验证输出文件
             ls -lh "$OUTPUT_DIR"
+            echo "::set-output name=build_success::true"
 
       - name: 上传制品
+        if: steps.freebsd-build.outputs.build_success == 'true'
         uses: actions/upload-artifact@main
         with:
           name: freebsd-binaries
           path: ./releases/new-api-*
           retention-days: 3
 
-      - name: 批量发布版本
+      - name: 发布版本
+        if: steps.freebsd-build.outputs.build_success == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cd "$GITHUB_WORKSPACE/releases"
+          cd ./releases
           for binary in new-api-*; do
             TAG="${binary#new-api-}"
+            echo "发布版本: $TAG"
             gh release create "$TAG" \
               --title "$TAG (FreeBSD)" \
               --notes "Automated build" \
               --prerelease \
               "$binary"
+          done
+
+      - name: 清理旧版本
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          current_tags=$(echo "${{ needs.prepare.outputs.build_list }}" | tr ' ' '\n')
+          gh release list --limit 100 | awk '/pre-release/{print $1}' | while read tag; do
+            if ! echo "$current_tags" | grep -qx "$tag"; then
+              echo "删除旧版本: $tag"
+              gh release delete -y "$tag" || true
+            fi
           done
