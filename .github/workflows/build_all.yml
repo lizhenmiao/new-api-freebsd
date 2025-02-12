@@ -69,9 +69,9 @@ jobs:
     if: ${{ needs.prepare.outputs.build_list != '[]' }}
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # 需要删除发布的权限
+      contents: write
     strategy:
-      max-parallel: 3  # 控制并发数量
+      max-parallel: 3
     steps:
       - uses: actions/checkout@v4
 
@@ -81,9 +81,7 @@ jobs:
           node-version: 18
 
       - name: 安装GitHub CLI
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gh
+        run: sudo apt-get update && sudo apt-get install -y gh
 
       - name: 批量构建 (FreeBSD)
         uses: vmactions/freebsd-vm@v1
@@ -91,7 +89,6 @@ jobs:
           usesh: true
           release: 13.2
           prepare: |
-            # 一次性安装所有依赖
             pkg update -y
             pkg install -y git gcc bash gmake go120 node npm
             wget https://dl.google.com/go/go1.23.4.freebsd-amd64.tar.gz
@@ -101,79 +98,49 @@ jobs:
           run: |
             set -e
             IFS=' ' read -ra TAGS <<< "${{ needs.prepare.outputs.build_list }}"
+            OUTPUT_DIR="$GITHUB_WORKSPACE/releases"
+            mkdir -p "$OUTPUT_DIR"
 
             for TAG in "${TAGS[@]}"; do
-              echo "=== 开始构建 $TAG ==="
+              echo "=== 构建 $TAG ==="
               BUILD_DIR="/builds/$TAG"
+              mkdir -p "$BUILD_DIR"
+              cd "$BUILD_DIR"
 
-              # 创建独立构建环境
-              mkdir -p $BUILD_DIR
-              cd $BUILD_DIR
+              git clone -b "$TAG" --depth 1 https://github.com/Calcium-Ion/new-api src
 
-              # 克隆指定版本代码
-              git clone -b $TAG --depth 1 https://github.com/Calcium-Ion/new-api src
-
-              # 前端构建（优化缓存策略）
+              # 构建前端
               cd src/web
-              echo "安装前端依赖..."
-              if [ -f package-lock.json ]; then
-                npm ci --prefer-offline --no-audit --no-fund --loglevel=error
-              else
-                npm install --prefer-offline --no-audit --no-fund --loglevel=error
-              fi
-              echo "构建前端资源..."
-              REACT_APP_VERSION=$TAG npm run build --silent
+              npm ci --prefer-offline --no-audit --no-fund --loglevel=error
+              REACT_APP_VERSION="$TAG" npm run build --silent
 
-              # 后端构建（启用缓存）
+              # 构建后端
               cd ..
-              echo "下载Go依赖..."
               go mod download
-              echo "编译二进制文件..."
-              go build -ldflags "-s -w -X 'one-api/common.Version=$TAG' -extldflags '-static'" -o ../new-api-$TAG
+              go build -ldflags "-s -w -X 'one-api/common.Version=$TAG' -extldflags '-static'" -o "$OUTPUT_DIR/new-api-$TAG"
 
-              # 清理中间文件（节省空间）
+              # 清理构建目录
               cd ../..
-              rm -rf $BUILD_DIR
-              echo "=== $TAG 构建完成 ==="
+              rm -rf "$BUILD_DIR"
             done
 
       - name: 上传制品
-        uses: actions/upload-artifact@main
+        uses: actions/upload-artifact@v3
         with:
           name: freebsd-binaries
-          path: /builds/new-api-*
+          path: ${{ github.workspace }}/releases/new-api-*
           retention-days: 3
 
       - name: 批量发布版本
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cd /builds
+          cd "$GITHUB_WORKSPACE/releases"
           for binary in new-api-*; do
-            TAG=${binary#new-api-}
-            echo "正在发布版本: $TAG"
-            gh release create $TAG \
+            TAG="${binary#new-api-}"
+            gh release create "$TAG" \
               --title "$TAG (FreeBSD)" \
-              --notes "Automated build for FreeBSD" \
+              --notes "Automated build" \
               --prerelease \
-              $binary
-          done
-
-      - name: 清理旧预发布版本
-        if: always()  # 即使前面步骤失败也执行
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "当前构建的版本: ${{ needs.prepare.outputs.build_list }}"
-          # 生成排除列表
-          CURRENT_TAGS=$(echo "${{ needs.prepare.outputs.build_list }}" | tr ' ' '\n' | sed 's/^/\\</;s/$/\\>/')
-
-          # 清理逻辑
-          gh release list --limit 100 | awk '/pre-release/{print $1}' | while read tag; do
-            if ! echo "$tag" | grep -qFf <(echo "$CURRENT_TAGS"); then
-              echo "正在删除旧版本: $tag"
-              gh release delete -y "$tag" || echo "删除失败（可能已不存在）"
-            else
-              echo "保留当前版本: $tag"
-            fi
+              "$binary"
           done
