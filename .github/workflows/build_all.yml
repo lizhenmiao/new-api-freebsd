@@ -139,7 +139,7 @@ jobs:
             done
 
       - name: 上传制品
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@main
         with:
           name: freebsd-binaries
           path: /builds/new-api-*
