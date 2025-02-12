@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.setup.outputs.matrix }}
+      has_tags: ${{ steps.setup.outputs.has_tags }}
     steps:
     - name: Validate test inputs
       id: validate
@@ -34,7 +35,7 @@ jobs:
           const isTestMode = '${{ inputs.test_mode }}' === 'true';
 
           // 安全处理输入标签
-          const inputTags = process.env.INPUT_TEST_TAGS?.split(',').map(t => t.trim()).filter(Boolean) || [];
+          const inputTags = process.env.INPUT_TEST_TAGS?.split(',')?.map(t => t.trim())?.filter(Boolean) || [];
 
           // 获取有效标签
           const { data: upstreamTags } = await github.paginate(
@@ -61,21 +62,28 @@ jobs:
             !existingReleases.some(r => r.tag_name === t)
           );
 
-          return missingTags;
+          core.setOutput('result', missingTags)
+          core.setOutput('has_tags', missingTags.length > 0 ? 'true' : 'false')
 
     - name: Generate build matrix
       id: setup
       run: |
         # 安全处理JSON输出
-        TAGS=${{ toJson(steps.get-tags.outputs.result) || '[]' }}
+        HAS_TAGS=${{ steps.get-tags.outputs.has_tags }}
+        TAGS=${{ steps.get-tags.outputs.result || '[]' }}
 
-        # 生成矩阵配置
-        matrix_json=$(echo "$TAGS" | jq -c '{include: map({tag: .})}')
+        if [ "$HAS_TAGS" = "true" ]; then
+          matrix_json=$(echo "$TAGS" | jq -c '{include: map({tag: .})}')
+        else
+          matrix_json='{"include":[]}'
+        fi
+
         echo "matrix=${matrix_json}" >> $GITHUB_OUTPUT
+        echo "has_tags=${HAS_TAGS}" >> $GITHUB_OUTPUT
 
   build:
     needs: prepare
-    if: ${{ fromJson(needs.prepare.outputs.matrix).include != '[]' }}
+    if: ${{ needs.prepare.outputs.has_tags == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
