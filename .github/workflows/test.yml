@@ -1,0 +1,113 @@
+name: Multi Tag Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Build mode (test/all)'
+        required: true
+        default: 'test'
+      limit:
+        description: 'Number of versions to test'
+        required: false
+        default: '3'
+
+jobs:
+  get-tags:
+    runs-on: ubuntu-latest
+    outputs:
+      build_tags: ${{ steps.get-tags.outputs.build_tags }}
+    steps:
+      - name: Get upstream tags
+        uses: actions/github-script@v7
+        id: get-tags
+        with:
+          script: |
+            const { data: upstreamTags } = await github.paginate(
+              github.rest.repos.listTags,
+              {
+                owner: 'Calcium-Ion',
+                repo: 'new-api',
+                per_page: 100
+              }
+            )
+
+            const { data: existingReleases } = await github.paginate(
+              github.rest.repos.listReleases,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100
+              }
+            )
+
+            const existingTags = new Set(existingReleases.map(r => r.tag_name))
+            const missingTags = upstreamTags
+              .filter(t => !existingTags.has(t.name))
+              .map(t => t.name)
+              .sort((a, b) => new Date(a.commit.author.date) - new Date(b.commit.author.date))
+
+            let buildTags = missingTags
+            if ('${{ github.event.inputs.mode }}' === 'test') {
+              buildTags = missingTags.slice(0, '${{ github.event.inputs.limit }}' || 3)
+            }
+
+            core.setOutput('build_tags', JSON.stringify(buildTags))
+
+  build:
+    needs: get-tags
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 3
+      matrix:
+        tag: ${{ fromJSON(needs.get-tags.outputs.build_tags) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Prepare workspace
+        run: |
+          mkdir -p builds/${{ matrix.tag }}
+          git clone --branch ${{ matrix.tag }} --depth 1 https://github.com/Calcium-Ion/new-api builds/${{ matrix.tag }}
+
+      - name: Build Frontend
+        working-directory: builds/${{ matrix.tag }}/web
+        env:
+          CI: ""
+        run: |
+          npm install --prefer-offline --no-audit
+          REACT_APP_VERSION=${{ matrix.tag }} npm run build
+
+      - name: Build Backend (FreeBSD)
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          release: 13.2
+          prepare: |
+            pkg install -y jq wget curl git gcc bash gawk gsed
+            wget https://dl.google.com/go/go1.23.4.freebsd-amd64.tar.gz
+            tar -C /usr/local -xzf go1.23.4.freebsd-amd64.tar.gz
+            ln -s /usr/local/go/bin/go /usr/local/bin/go
+          run: |
+            cd builds/${{ matrix.tag }}
+            go mod download
+            go build -ldflags "-s -w -X 'one-api/common.Version=${{ matrix.tag }}' -extldflags '-static'" -o new-api
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: new-api-${{ matrix.tag }}
+          path: builds/${{ matrix.tag }}/new-api
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ matrix.tag }}
+          prerelease: false
+          files: builds/${{ matrix.tag }}/new-api
