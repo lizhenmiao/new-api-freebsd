@@ -51,16 +51,7 @@ jobs:
               const existingTags = new Set((currentReleases || []).map(r => r.tag_name))
               let newTags = upstreamTags
                 .filter(t => t && t.name && !existingTags.has(t.name))
-                .map(t => ({
-                  name: t.name,
-                  // 安全获取commit时间，优先使用author时间，其次committer时间
-                  date: t.commit?.commit?.author?.date ||
-                        t.commit?.commit?.committer?.date ||
-                        new Date(0).toISOString()
-                }))
-                // 按时间从旧到新排序
-                .sort((a, b) => new Date(a.date) - new Date(b.date))
-                .map(t => t.name)
+                .reverse()
 
               // 测试模式处理
               const testCount = Math.max(0, parseInt('${{ inputs.test-mode }}') || 0)
@@ -124,7 +115,7 @@ jobs:
             go build -ldflags "-s -w -X 'one-api/common.Version=${{ matrix.tag }}' -extldflags '-static'" -o new-api
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@main
         with:
           name: new-api-${{ matrix.tag }}
           path: builds/${{ matrix.tag }}/new-api/new-api
