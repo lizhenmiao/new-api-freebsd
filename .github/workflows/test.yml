@@ -1,29 +1,26 @@
-name: Multi Tag Builder
+name: Batch Build Tags
 
 on:
   workflow_dispatch:
     inputs:
-      mode:
-        description: 'Build mode (test/all)'
-        required: true
-        default: 'test'
-      limit:
-        description: 'Number of versions to test'
+      test-mode:
+        description: 'Test mode (build first N tags)'
         required: false
-        default: '3'
+        default: '0'
+        type: string
 
 jobs:
-  get-tags:
+  fetch-tags:
     runs-on: ubuntu-latest
     outputs:
-      build_tags: ${{ steps.get-tags.outputs.build_tags }}
+      tag_list: ${{ steps.get-tags.outputs.tag_list }}
     steps:
-      - name: Get upstream tags
+      - name: Get all upstream tags
         uses: actions/github-script@v7
         id: get-tags
         with:
           script: |
-            const { data: upstreamTags } = await github.paginate(
+            const upstreamTags = await github.paginate(
               github.rest.repos.listTags,
               {
                 owner: 'Calcium-Ion',
@@ -32,37 +29,37 @@ jobs:
               }
             )
 
-            const { data: existingReleases } = await github.paginate(
+            const currentReleases = await github.paginate(
               github.rest.repos.listReleases,
               {
                 owner: context.repo.owner,
-                repo: context.repo.repo,
-                per_page: 100
+                repo: context.repo.repo
               }
             )
 
-            const existingTags = new Set(existingReleases.map(r => r.tag_name))
-            const missingTags = upstreamTags
+            const existingTags = new Set((currentReleases || []).map(r => r.tag_name))
+            const newTags = upstreamTags
               .filter(t => !existingTags.has(t.name))
+              .sort((a, b) => new Date(a.commit.commit.author.date) - new Date(b.commit.commit.author.date))
               .map(t => t.name)
-              .sort((a, b) => new Date(a.commit.author.date) - new Date(b.commit.author.date))
 
-            let buildTags = missingTags
-            if ('${{ github.event.inputs.mode }}' === 'test') {
-              buildTags = missingTags.slice(0, '${{ github.event.inputs.limit }}' || 3)
+            const testCount = parseInt('${{ inputs.test-mode }}') || 0
+            if (testCount > 0) {
+              newTags = newTags.slice(0, testCount)
             }
 
-            core.setOutput('build_tags', JSON.stringify(buildTags))
+            core.setOutput('tag_list', JSON.stringify(newTags))
 
   build:
-    needs: get-tags
+    needs: fetch-tags
     runs-on: ubuntu-latest
     strategy:
       max-parallel: 3
       matrix:
-        tag: ${{ fromJSON(needs.get-tags.outputs.build_tags) }}
+        tag: ${{ fromJSON(needs.fetch-tags.outputs.tag_list) }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout current repo
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v3
@@ -72,15 +69,17 @@ jobs:
       - name: Prepare workspace
         run: |
           mkdir -p builds/${{ matrix.tag }}
-          git clone --branch ${{ matrix.tag }} --depth 1 https://github.com/Calcium-Ion/new-api builds/${{ matrix.tag }}
+          cd builds/${{ matrix.tag }}
+          git clone -b ${{ matrix.tag }} --depth 1 https://github.com/Calcium-Ion/new-api
 
       - name: Build Frontend
-        working-directory: builds/${{ matrix.tag }}/web
         env:
           CI: ""
         run: |
+          cd builds/${{ matrix.tag }}/new-api/web
           npm install --prefer-offline --no-audit
           REACT_APP_VERSION=${{ matrix.tag }} npm run build
+          cd ../../../..
 
       - name: Build Backend (FreeBSD)
         uses: vmactions/freebsd-vm@v1
@@ -88,20 +87,24 @@ jobs:
           usesh: true
           release: 13.2
           prepare: |
-            pkg install -y jq wget curl git gcc bash gawk gsed
-            wget https://dl.google.com/go/go1.23.4.freebsd-amd64.tar.gz
-            tar -C /usr/local -xzf go1.23.4.freebsd-amd64.tar.gz
-            ln -s /usr/local/go/bin/go /usr/local/bin/go
+            # 只安装一次依赖
+            if [ ! -f /usr/local/bin/go ]; then
+              pkg install -y jq wget curl git gcc bash gawk gsed
+              wget https://dl.google.com/go/go1.23.4.freebsd-amd64.tar.gz
+              tar -C /usr/local -xzf go1.23.4.freebsd-amd64.tar.gz
+              rm go1.23.4.freebsd-amd64.tar.gz
+              ln -s /usr/local/go/bin/go /usr/local/bin/go
+            fi
           run: |
-            cd builds/${{ matrix.tag }}
+            cd builds/${{ matrix.tag }}/new-api
             go mod download
             go build -ldflags "-s -w -X 'one-api/common.Version=${{ matrix.tag }}' -extldflags '-static'" -o new-api
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
         with:
           name: new-api-${{ matrix.tag }}
-          path: builds/${{ matrix.tag }}/new-api
+          path: builds/${{ matrix.tag }}/new-api/new-api
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
@@ -109,5 +112,5 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ matrix.tag }}
-          prerelease: false
-          files: builds/${{ matrix.tag }}/new-api
+          prerelease: true
+          files: builds/${{ matrix.tag }}/new-api/new-api
