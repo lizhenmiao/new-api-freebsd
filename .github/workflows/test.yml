@@ -20,41 +20,65 @@ jobs:
         id: get-tags
         with:
           script: |
-            const upstreamTags = await github.paginate(
-              github.rest.repos.listTags,
-              {
-                owner: 'Calcium-Ion',
-                repo: 'new-api',
-                per_page: 100
+            try {
+              // 获取上游所有tags
+              const upstreamTags = await github.paginate(
+                github.rest.repos.listTags,
+                {
+                  owner: 'Calcium-Ion',
+                  repo: 'new-api',
+                  per_page: 100
+                }
+              )
+
+              console.log('upstreamTags===', upstreamTags)
+
+              // 获取当前所有release（处理空release情况）
+              let currentReleases = []
+              try {
+                currentReleases = await github.paginate(
+                  github.rest.repos.listReleases,
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo
+                  }
+                )
+              } catch (error) {
+                console.log('No existing releases found')
               }
-            )
 
-            const currentReleases = await github.paginate(
-              github.rest.repos.listReleases,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo
+              // 处理可能的空数据情况
+              const existingTags = new Set((currentReleases || []).map(r => r.tag_name))
+              let newTags = upstreamTags
+                .filter(t => t && t.name && !existingTags.has(t.name))
+                .map(t => ({
+                  name: t.name,
+                  // 安全获取commit时间，优先使用author时间，其次committer时间
+                  date: t.commit?.commit?.author?.date ||
+                        t.commit?.commit?.committer?.date ||
+                        new Date(0).toISOString()
+                }))
+                // 按时间从旧到新排序
+                .sort((a, b) => new Date(a.date) - new Date(b.date))
+                .map(t => t.name)
+
+              // 测试模式处理
+              const testCount = Math.max(0, parseInt('${{ inputs.test-mode }}') || 0)
+              if (testCount > 0) {
+                newTags = newTags.slice(0, testCount)
               }
-            )
 
-            const existingTags = new Set((currentReleases || []).map(r => r.tag_name))
-            const newTags = upstreamTags
-              .filter(t => !existingTags.has(t.name))
-              .sort((a, b) => new Date(a.commit.commit.author.date) - new Date(b.commit.commit.author.date))
-              .map(t => t.name)
+              core.setOutput('tag_list', JSON.stringify(newTags))
 
-            const testCount = parseInt('${{ inputs.test-mode }}') || 0
-            if (testCount > 0) {
-              newTags = newTags.slice(0, testCount)
+            } catch (error) {
+              core.setFailed(`Failed to get tags: ${error.message}`)
+              core.setOutput('tag_list', '[]')
             }
-
-            core.setOutput('tag_list', JSON.stringify(newTags))
 
   build:
     needs: fetch-tags
     runs-on: ubuntu-latest
     strategy:
-      max-parallel: 3
       matrix:
         tag: ${{ fromJSON(needs.fetch-tags.outputs.tag_list) }}
     steps:
@@ -87,10 +111,9 @@ jobs:
           usesh: true
           release: 13.2
           prepare: |
-            # 只安装一次依赖
             if [ ! -f /usr/local/bin/go ]; then
               pkg install -y jq wget curl git gcc bash gawk gsed
-              wget https://dl.google.com/go/go1.23.4.freebsd-amd64.tar.gz
+              wget -q https://dl.google.com/go/go1.23.4.freebsd-amd64.tar.gz
               tar -C /usr/local -xzf go1.23.4.freebsd-amd64.tar.gz
               rm go1.23.4.freebsd-amd64.tar.gz
               ln -s /usr/local/go/bin/go /usr/local/bin/go
@@ -112,5 +135,5 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ matrix.tag }}
-          prerelease: true
+          prerelease: ${{ inputs.test-mode != '0' }}
           files: builds/${{ matrix.tag }}/new-api/new-api
